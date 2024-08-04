@@ -1,23 +1,26 @@
-Question Classification Interface
+# Question Classification Interface
 
 This Streamlit app classifies questions based on a provided knowledge base using BERT embeddings and cosine similarity. The app allows users to upload a knowledge base and a set of questions, classify those questions, and display results interactively.
 
-Prerequisites
+## Prerequisites
+
 Before running the app locally, ensure you have the following packages installed:
 
-pandas
-streamlit
-scikit-learn
-transformers
-torch
-openpyxl (for reading Excel files)
+- `pandas`
+- `streamlit`
+- `scikit-learn`
+- `transformers`
+- `torch`
+- `openpyxl` (for reading Excel files)
 
 You can install these packages using pip:
 
+```bash
 pip install pandas streamlit scikit-learn transformers torch openpyxl
 
 
 Accessing the App
+
 The app is hosted online and can be accessed at:
 
 https://assessment-1v6x.onrender.com/
