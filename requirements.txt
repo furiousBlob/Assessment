@@ -1,0 +1,6 @@
+pandas
+scikit-learn
+streamlit
+transformers
+torch
+python==3.10.12
