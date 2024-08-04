@@ -1,52 +1,102 @@
-import streamlit as st
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.naive_bayes import MultinomialNB
-from sklearn.pipeline import Pipeline
+import streamlit as st
+from sklearn.metrics.pairwise import cosine_similarity
+from transformers import BertTokenizer, BertModel
+import torch
 
-# Load the knowledge base
-knowledge_base_path = 'ClientABC _ ATB Financial_Knowledge Base.xlsx'
-knowledge_base_df = pd.read_excel(knowledge_base_path, sheet_name='Data Sheet', header=5)
-knowledge_base_cleaned = knowledge_base_df[['Section Heading', 'Control Heading', 'Question Text', 'Answer']].dropna(subset=['Question Text', 'Answer'])
+# Load pre-trained BERT model and tokenizer
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+model = BertModel.from_pretrained('bert-base-uncased')
 
-# Combine features
-knowledge_base_cleaned['Combined Features'] = knowledge_base_cleaned['Section Heading'] + ' ' + knowledge_base_cleaned['Control Heading'] + ' ' + knowledge_base_cleaned['Question Text']
+# Function to fill missing headings
+def fill_missing_headings(df):
+    df['Section Heading'].ffill(inplace=True)
+    df['Control Heading'].ffill(inplace=True)
+    return df
 
-knowledge_base_cleaned['Combined Features'] = knowledge_base_cleaned['Combined Features'].fillna('')
+def get_embeddings(text):
+    inputs = tokenizer(text, return_tensors='pt', padding=True, truncation=True)
+    outputs = model(**inputs)
+    return outputs.last_hidden_state.mean(dim=1).detach().numpy()
 
+# Function to load and process the knowledge base
+def load_knowledge_base(file):
+    df = pd.read_excel(file, header=5)
+    df['Section Heading'].ffill(inplace=True)
+    df['Control Heading'].ffill(inplace=True)
+    df = df[['Section Heading', 'Control Heading', 'Question Text', 'Answer']]
+    df['Combined'] = df['Section Heading'] + ' ' + df['Control Heading'] + ' ' + df['Question Text']
+    df['Question_Embedding'] = df['Combined'].apply(lambda x: get_embeddings(str(x)))
+    df['Answer_Embedding'] = df['Answer'].apply(lambda x: get_embeddings(str(x)))
+    return df
 
-# Prepare data for training
-X = knowledge_base_cleaned['Combined Features']
-y = ['Answerable'] * len(X)  # All these entries are 'Answerable' since they exist in the knowledge base
+def process_knowledge_base(knowledge_base_df):
+    knowledge_base = knowledge_base_df.copy()
+    knowledge_base['Combined'] = knowledge_base['Section Heading'] + ' ' + knowledge_base['Control Heading'] + ' ' + knowledge_base['Question Text']
+    knowledge_base['Question_Embedding'] = knowledge_base['Combined'].apply(lambda x: get_embeddings(str(x)))
+    knowledge_base['Answer_Embedding'] = knowledge_base['Answer'].apply(lambda x: get_embeddings(str(x)))
+    return knowledge_base
 
-# Split the data
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Create a pipeline for vectorization and model training
-model = Pipeline([
-    ('tfidf', TfidfVectorizer()),
-    ('clf', MultinomialNB())
-])
-
-# Train the model
-model.fit(X_train, y_train)
+def classify_question(question_embedding, knowledge_base):
+    similarities = knowledge_base['Question_Embedding'].apply(lambda x: cosine_similarity(x, question_embedding)[0][0])
+    max_index = similarities.idxmax()
+    max_similarity = similarities[max_index]
+    if max_similarity > 0.85:
+        classification = "Answerable"
+    elif max_similarity < 0.7:
+        classification = "Unanswerable"
+    else:
+        classification = "Ambiguous"
+    return classification, max_similarity, knowledge_base.loc[max_index, 'Section Heading'], knowledge_base.loc[max_index, 'Control Heading']
 
 # Streamlit UI
-st.title("Questionnaire Classification")
+st.title('Question Classification Interface')
 
-uploaded_file = st.file_uploader("Upload Industry Standard Questionnaire", type=["xlsx"])
+# Upload Knowledge Base
+knowledge_base_file = st.file_uploader("Upload Knowledge Base File (Excel)", type=["xlsx"])
+if knowledge_base_file:
+    knowledge_base_df = load_knowledge_base(knowledge_base_file)
+    knowledge_base_df = fill_missing_headings(knowledge_base_df)
+    knowledge_base = process_knowledge_base(knowledge_base_df)
+    st.write("Knowledge Base loaded successfully.")
 
-if uploaded_file:
-    questions_df = pd.read_excel(uploaded_file, sheet_name='Industry Standard Questionnaire').dropna().reset_index(drop=True)
-    questions_df['Combined Features'] = questions_df.iloc[:, 0]  # Assuming the first column contains the questions
-    questions_df['Classification'] = model.predict(questions_df['Combined Features'])
+    # Upload Questionnaire
+    questionnaire_file = st.file_uploader("Upload Industry Standard Questionnaire (Excel)", type=["xlsx"])
+    if questionnaire_file:
+        questions_df = pd.read_excel(questionnaire_file, header=None)
+        questions = questions_df[0].fillna("")
+        questions_embeddings = questions.apply(lambda x: get_embeddings(str(x)))
 
-    total_questions = len(questions_df)
-    answerable_questions = len(questions_df[questions_df['Classification'] == 'Answerable'])
-    completion_percentage = (answerable_questions / total_questions) * 100
-    unanswerable_questions = questions_df[questions_df['Classification'] == 'Unanswerable']
+        # Classify the questions
+        classifications = questions_embeddings.apply(lambda x: classify_question(x, knowledge_base_df))
+        questions_df = pd.DataFrame({
+            'Question': questions,
+            'Classification': classifications.apply(lambda x: x[0]),
+            'Similarity': classifications.apply(lambda x: x[1]),
+            'Section Heading': classifications.apply(lambda x: x[2]),
+            'Control Heading': classifications.apply(lambda x: x[3])
+        })
 
-    st.write(f"Completion Percentage: {completion_percentage}%")
-    st.write("Unanswerable Questions:")
-    st.write(unanswerable_questions)
+        # Display Results
+        st.write("Classification Results:")
+        st.dataframe(questions_df[['Question', 'Classification', 'Similarity', 'Section Heading', 'Control Heading']])
+        
+        # Calculate and display the percentage of answerable questions
+        answerable_percentage = (questions_df['Classification'] == 'Answerable').mean() * 100
+        st.write(f"Percentage of answerable questions: {answerable_percentage:.2f}%")
+
+        # List unanswerable questions
+        unanswerable_questions = questions_df[questions_df['Classification'] == 'Unanswerable']
+        if not unanswerable_questions.empty:
+            st.write("Unanswerable questions:")
+            st.dataframe(unanswerable_questions[['Question', 'Similarity', 'Section Heading', 'Control Heading']])
+
+    # Allow users to input and classify a random question
+    st.write("Classify a New Question")
+    user_question = st.text_input("Enter a question:")
+    if user_question:
+        user_question_embedding = get_embeddings(user_question)
+        classification, similarity, section_heading, control_heading = classify_question(user_question_embedding, knowledge_base)
+        st.write(f"Classification: {classification}")
+        st.write(f"Similarity: {similarity:.2f}")
+
